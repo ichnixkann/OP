@@ -46,6 +46,7 @@ SAMPLE_RATE = int(CONFIG["sample_rate"])
 SILENCE_THRESHOLD = float(CONFIG["silence_threshold"])
 SILENCE_DURATION_MS = int(CONFIG["silence_duration_ms"])
 MAX_RECORDING_MS = int(CONFIG["max_recording_ms"])
+MIN_RECORDING_MS = int(CONFIG.get("min_recording_ms", 1000))  # ignore silence cutoff before this
 
 # Lazy engine singletons (instantiated on first use to keep startup fast).
 _stt_engine: Optional[stt.STTEngine] = None
@@ -145,6 +146,7 @@ class Session:
         self.recording_start: Optional[float] = None
         self.conversation: list[dict] = []
         self._lock = asyncio.Lock()
+        self._heard_speech = False
 
     async def send(self, message: dict) -> None:
         try:
@@ -164,15 +166,13 @@ class Session:
                 await self._accumulate_utterance(audio)
 
     async def force_listen(self) -> None:
-        """Skip wake word detection and enter listening mode directly."""
+        """Enter listening mode directly, interrupting any current state."""
         async with self._lock:
-            if self.state != "idle":
-                logger.info("force_listen ignored (state=%s)", self.state)
-                return
-            logger.info("Force-listen triggered -> listening")
+            logger.info("Force-listen triggered (was %s) -> listening", self.state)
             self.buffer = []
             self.buffer_samples = 0
             self.silence_samples = 0
+            self._heard_speech = False
             self.recording_start = time.monotonic()
             await self.set_state("listening")
 
@@ -186,6 +186,7 @@ class Session:
             self.buffer = [audio]
             self.buffer_samples = audio.size
             self.silence_samples = 0
+            self._heard_speech = True  # wake word counts as speech
             self.recording_start = time.monotonic()
             await self.set_state("listening")
 
@@ -193,15 +194,34 @@ class Session:
         self.buffer.append(audio)
         self.buffer_samples += audio.size
         rms = float(np.sqrt(np.mean(audio ** 2))) if audio.size else 0.0
-        if rms < SILENCE_THRESHOLD:
-            self.silence_samples += audio.size
-        else:
+
+        # Track whether we've heard actual speech in this utterance
+        if rms >= SILENCE_THRESHOLD:
             self.silence_samples = 0
+            self._heard_speech = True
+        elif self._heard_speech:
+            # Only count silence AFTER we've heard speech
+            self.silence_samples += audio.size
+        # else: still in initial silence, keep waiting for user to speak
 
         elapsed_ms = (time.monotonic() - (self.recording_start or time.monotonic())) * 1000
         silence_ms = (self.silence_samples / SAMPLE_RATE) * 1000
-        if silence_ms >= SILENCE_DURATION_MS or elapsed_ms >= MAX_RECORDING_MS:
+
+        # Don't cut off from silence until we've actually heard speech AND
+        # enough minimum time has passed. Always respect max recording time.
+        if elapsed_ms >= MAX_RECORDING_MS:
+            logger.info("Max recording time reached (%dms), finalizing", elapsed_ms)
             await self._finalize_utterance()
+        elif self._heard_speech and silence_ms >= SILENCE_DURATION_MS and elapsed_ms >= MIN_RECORDING_MS:
+            logger.info("Silence detected (%dms after speech), finalizing", silence_ms)
+            await self._finalize_utterance()
+        elif not self._heard_speech and elapsed_ms >= MIN_RECORDING_MS * 3:
+            # No speech heard at all after 3x min time — give up
+            logger.info("No speech detected after %dms, cancelling", elapsed_ms)
+            self.buffer = []
+            self.buffer_samples = 0
+            self.silence_samples = 0
+            await self.set_state("idle")
 
     async def _finalize_utterance(self) -> None:
         if self.buffer_samples == 0:

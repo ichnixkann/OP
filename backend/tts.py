@@ -27,16 +27,46 @@ class TTSEngine:
         self._model = SpeechT5ForTextToSpeech.from_pretrained(model_name).to(device)
         self._vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan").to(device)
 
-        # Load speaker embeddings (XIM2 voice).
-        from datasets import load_dataset  # type: ignore
-
-        try:
-            emb_dataset = load_dataset(speaker_embeddings_name, split="train")
-            self._speaker_embeddings = torch.tensor(emb_dataset[0]["xvector"]).unsqueeze(0).to(device)
-        except Exception as exc:
-            logger.warning("Falling back to default speaker embeddings: %s", exc)
-            self._speaker_embeddings = torch.zeros(1, 512).to(device)
+        # Load speaker embeddings. The Matthijs/cmu_xim2 dataset requires the
+        # `datasets` library and has been unreliable on the Hub. Instead we
+        # download the speaker embedding vector directly as a .pt file from
+        # the SpeechT5 model card examples, or generate a deterministic one.
+        self._speaker_embeddings = self._load_speaker_embeddings(speaker_embeddings_name, device)
         logger.info("TTS model loaded")
+
+    def _load_speaker_embeddings(self, name: str, device: str):
+        """Try multiple sources for speaker embeddings; never fall back to zeros."""
+        import torch
+
+        # Source 1: try the datasets library (original approach)
+        try:
+            from datasets import load_dataset  # type: ignore
+
+            ds = load_dataset(name, split="train")
+            emb = torch.tensor(ds[0]["xvector"]).unsqueeze(0).to(device)
+            logger.info("Speaker embeddings loaded from dataset %s", name)
+            return emb
+        except Exception as exc:
+            logger.info("Dataset %s unavailable (%s), trying alternatives…", name, exc)
+
+        # Source 2: download a pre-computed speaker embedding .pt file
+        try:
+            from huggingface_hub import hf_hub_download
+
+            path = hf_hub_download(repo_id="microsoft/speecht5_tts", filename="speaker_embeddings.pt")
+            emb = torch.load(path, map_location=device).unsqueeze(0).to(device)
+            logger.info("Speaker embeddings loaded from speecht5_tts repo")
+            return emb
+        except Exception as exc:
+            logger.info("hf_hub_download for speaker_embeddings.pt failed: %s", exc)
+
+        # Source 3: generate a deterministic embedding (not zeros — zeros produce
+        # garbage audio). Use a fixed seed so the voice is consistent across runs.
+        torch.manual_seed(42)
+        emb = torch.randn(1, 512) * 0.1
+        emb = emb / emb.norm() * 10.0  # normalise to typical xvector magnitude
+        logger.warning("Using deterministic random speaker embeddings (voice may vary)")
+        return emb.to(device)
 
     def synthesize(self, text: str, sample_rate: int = 22050) -> tuple[np.ndarray, int]:
         """Synthesize text to PCM audio. Returns (float32 mono, output_sample_rate)."""
