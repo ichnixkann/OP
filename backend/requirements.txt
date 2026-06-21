@@ -1,0 +1,18 @@
+# Python backend dependencies for the voice assistant.
+# Torch is installed separately (CPU or CUDA build) - see README.md.
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=13.0
+numpy>=1.26,<2.3
+transformers>=4.46.0
+accelerate>=1.1.0
+sentencepiece>=0.2.0
+torch>=2.5.0
+torchaudio>=2.5.0
+sounddevice>=0.5.1
+scipy>=1.14.0
+pydantic>=2.10.0
+openwakeword>=0.6.0
+onnxruntime>=1.20.0
+datasets>=3.0.0

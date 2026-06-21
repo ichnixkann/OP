@@ -1,0 +1,34 @@
+{
+  "name": "voice-assistant",
+  "version": "0.1.0",
+  "description": "Cross-platform desktop voice assistant powered by HuggingFace speech-to-speech",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:dev": "concurrently -k -n BACKEND,APP -c blue,green \"npm run backend\" \"npm start\"",
+    "backend": "cd backend && python3 -m uvicorn server:app --host 127.0.0.1 --port 8765",
+    "build": "electron-builder",
+    "build:linux": "electron-builder --linux",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "build": {
+    "appId": "com.local.voiceassistant",
+    "productName": "Voice Assistant",
+    "files": ["electron/**/*", "src/**/*", "assets/**/*", "config.json"],
+    "extraResources": [{ "from": "backend", "to": "backend" }],
+    "linux": { "target": ["AppImage"], "category": "Utility" },
+    "mac": { "target": ["dmg"], "category": "public.app-category.utilities" },
+    "win": { "target": ["nsis"] }
+  }
+}

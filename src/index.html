@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws://127.0.0.1:8765 http://127.0.0.1:8765;" />
+  <title>Voice Assistant</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="status">
+      <span id="statusDot" class="dot idle"></span>
+      <span id="statusText">Not started</span>
+    </div>
+    <div class="conn-status">
+      <span id="wsStatus" class="conn-badge off">WS: —</span>
+      <span id="micStatus" class="conn-badge off">MIC: —</span>
+    </div>
+    <button id="settingsBtn" class="icon-btn" title="Settings">⚙</button>
+  </header>
+
+  <main id="conversation" class="conversation">
+    <div class="welcome">
+      <p>Click <b>Push to talk</b> below to start the assistant.</p>
+      <p class="dim">The first click enables microphone access.<br/>After that, click again to speak.</p>
+    </div>
+  </main>
+
+  <section id="livePanel" class="live-panel">
+    <div class="live-label">Last heard</div>
+    <div id="liveTranscript" class="live-transcript placeholder">—</div>
+  </section>
+
+  <section id="debugLog" class="debug-log">
+    <div class="debug-label">Log <button id="clearLogBtn" class="tiny">clear</button></div>
+    <div id="debugContent" class="debug-content"></div>
+  </section>
+
+  <section id="settingsPanel" class="settings hidden">
+    <h2>Settings</h2>
+    <label>
+      Wake word
+      <input id="wakeWordInput" type="text" placeholder="computer" />
+    </label>
+    <label>
+      Wake sensitivity (0.01–0.5, lower = stricter)
+      <input id="sensitivityInput" type="number" min="0.01" max="0.5" step="0.01" />
+    </label>
+    <label class="row">
+      <input id="enableCommands" type="checkbox" />
+      Enable command execution
+    </label>
+    <label class="row">
+      <input id="enableLLM" type="checkbox" />
+      Enable LLM responses
+    </label>
+    <div class="row">
+      <button id="saveSettings" class="primary">Save</button>
+      <button id="closeSettings" class="ghost">Close</button>
+    </div>
+  </section>
+
+  <footer class="controls">
+    <div class="meter"><div id="meterFill"></div></div>
+    <div class="buttons">
+      <button id="muteBtn" class="ghost" title="Mute mic">🎙</button>
+      <button id="pushBtn" class="primary big-btn" title="Click to start listening">Push to talk</button>
+      <button id="stopBtn" class="ghost" title="Stop">⏹</button>
+    </div>
+    <p class="hint" id="hint">Click "Push to talk" to begin.</p>
+  </footer>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

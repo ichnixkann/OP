@@ -1,0 +1,20 @@
+{
+  "wake_word": "computer",
+  "wake_word_sensitivity": 0.06,
+  "stt_model": "distil-whisper/distil-large-v3",
+  "stt_language": "en",
+  "tts_model": "microsoft/speecht5_tts",
+  "tts_speaker_embeddings": "Matthijs/cmu_xim2",
+  "llm_model": "Qwen/Qwen2.5-1.5B-Instruct",
+  "llm_max_new_tokens": 256,
+  "llm_temperature": 0.7,
+  "device": "auto",
+  "sample_rate": 16000,
+  "silence_threshold": 0.01,
+  "silence_duration_ms": 800,
+  "max_recording_ms": 15000,
+  "enable_command_execution": true,
+  "enable_llm_response": true,
+  "backend_host": "127.0.0.1",
+  "backend_port": 8765
+}
