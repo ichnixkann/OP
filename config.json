@@ -4,7 +4,7 @@
   "stt_model": "distil-whisper/distil-large-v3",
   "stt_language": "en",
   "tts_model": "microsoft/speecht5_tts",
-  "tts_speaker_embeddings": "Matthijs/cmu_xim2",
+  "tts_speaker_embeddings": "Matthijs/cmu-arctic-xvectors",
   "llm_model": "Qwen/Qwen2.5-1.5B-Instruct",
   "llm_max_new_tokens": 256,
   "llm_temperature": 0.7,
