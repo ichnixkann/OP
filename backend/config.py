@@ -14,7 +14,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "wake_word_sensitivity": 0.06,
     "stt_model": "distil-whisper/distil-large-v3",
     "stt_language": "en",
-    "tts_model": "microsoft/speecht5_tts",
+    "tts_model": "facebook/mms-tts-eng",
     "tts_speaker_embeddings": "Matthijs/cmu-arctic-xvectors",
     "llm_model": "Qwen/Qwen2.5-1.5B-Instruct",
     "llm_max_new_tokens": 256,
