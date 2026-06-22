@@ -19,7 +19,6 @@ import asyncio
 import base64
 import json
 import logging
-import struct
 import time
 from typing import Optional
 
@@ -28,7 +27,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import commands, llm, stt, tts, wakeword
-from .config import load_config, resolve_device
+from .config import load_config, resolve_device, save_config, validate_config, RESTART_KEYS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("voice-assistant.server")
@@ -119,8 +118,36 @@ async def get_config() -> dict:
 
 @app.post("/config")
 async def update_config(patch: dict) -> dict:
-    CONFIG.update(patch)
-    return CONFIG
+    """Validate, apply, and persist config changes.
+
+    Returns the full config plus any warnings about keys requiring restart.
+    """
+    cleaned, errors = validate_config(patch)
+    if errors:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=400,
+            content={"errors": errors, "config": CONFIG},
+        )
+
+    restart_needed = bool(set(cleaned.keys()) & RESTART_KEYS)
+    CONFIG.update(cleaned)
+
+    # Update live runtime values that the session loop reads.
+    global SILENCE_THRESHOLD, SILENCE_DURATION_MS, MAX_RECORDING_MS, MIN_RECORDING_MS
+    SILENCE_THRESHOLD = float(CONFIG["silence_threshold"])
+    SILENCE_DURATION_MS = int(CONFIG["silence_duration_ms"])
+    MAX_RECORDING_MS = int(CONFIG["max_recording_ms"])
+    MIN_RECORDING_MS = int(CONFIG.get("min_recording_ms", 1000))
+
+    # Persist to disk.
+    save_config(CONFIG)
+
+    response = dict(CONFIG)
+    if restart_needed:
+        response["_restart_required"] = True
+        response["_restart_keys"] = list(set(cleaned.keys()) & RESTART_KEYS)
+    return response
 
 
 def _decode_audio(payload: str) -> np.ndarray:
@@ -147,6 +174,7 @@ class Session:
         self.conversation: list[dict] = []
         self._lock = asyncio.Lock()
         self._heard_speech = False
+        self._processing = False
 
     async def send(self, message: dict) -> None:
         try:
@@ -159,6 +187,8 @@ class Session:
         await self.send({"type": "status", "state": state})
 
     async def handle_audio(self, audio: np.ndarray) -> None:
+        if self._processing:
+            return
         async with self._lock:
             if self.state == "idle":
                 await self._detect_wake(audio)
@@ -231,6 +261,7 @@ class Session:
         self.buffer = []
         self.buffer_samples = 0
         self.silence_samples = 0
+        self._processing = True
         await self.set_state("transcribing")
 
         try:
@@ -238,11 +269,13 @@ class Session:
         except Exception as exc:
             logger.exception("STT failed")
             await self.send({"type": "error", "message": f"STT failed: {exc}"})
+            self._processing = False
             await self.set_state("idle")
             return
 
         if not text:
             logger.info("Empty transcript -> idle")
+            self._processing = False
             await self.set_state("idle")
             return
 
@@ -270,6 +303,7 @@ class Session:
 
     async def _speak(self, text: str) -> None:
         if _tts_engine is None:
+            self._processing = False
             await self.set_state("idle")
             return
         await self.set_state("speaking")
@@ -278,10 +312,12 @@ class Session:
         except Exception as exc:
             logger.exception("TTS failed")
             await self.send({"type": "error", "message": f"TTS failed: {exc}"})
+            self._processing = False
             await self.set_state("idle")
             return
         if audio.size:
             await self.send({"type": "audio", "data": _encode_audio(audio), "sample_rate": out_sr})
+        self._processing = False
         await self.set_state("idle")
 
 
@@ -319,11 +355,16 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             elif mtype == "stop":
                 session.buffer = []
                 session.buffer_samples = 0
+                session.silence_samples = 0
+                session._heard_speech = False
+                session._processing = False
                 await session.set_state("idle")
             elif mtype == "force_listen":
                 await session.force_listen()
             elif mtype == "config":
-                CONFIG.update(message.get("config", {}))
+                cleaned, errors = validate_config(message.get("config", {}))
+                if not errors:
+                    CONFIG.update(cleaned)
                 await session.send({"type": "status", "state": session.state})
             else:
                 await session.send({"type": "error", "message": f"Unknown type {mtype}"})

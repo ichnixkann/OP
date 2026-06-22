@@ -26,11 +26,28 @@ const stopBtn = $('stopBtn');
 const settingsBtn = $('settingsBtn');
 const settingsPanel = $('settingsPanel');
 const saveSettings = $('saveSettings');
+const resetSettings = $('resetSettings');
 const closeSettings = $('closeSettings');
+const settingsMessage = $('settingsMessage');
+
+// Settings inputs
 const wakeWordInput = $('wakeWordInput');
 const sensitivityInput = $('sensitivityInput');
+const sttModelInput = $('sttModelInput');
+const sttLanguageInput = $('sttLanguageInput');
+const ttsModelInput = $('ttsModelInput');
+const ttsSpeakerInput = $('ttsSpeakerInput');
+const llmModelInput = $('llmModelInput');
+const llmMaxTokensInput = $('llmMaxTokensInput');
+const llmTemperatureInput = $('llmTemperatureInput');
+const silenceThresholdInput = $('silenceThresholdInput');
+const silenceDurationInput = $('silenceDurationInput');
+const minRecordingInput = $('minRecordingInput');
+const maxRecordingInput = $('maxRecordingInput');
+const deviceInput = $('deviceInput');
 const enableCommands = $('enableCommands');
 const enableLLM = $('enableLLM');
+
 const wsStatus = $('wsStatus');
 const micStatus = $('micStatus');
 const debugContent = $('debugContent');
@@ -48,6 +65,8 @@ let audioChunksSent = 0;
 let wsConnected = false;
 let listening = false;
 let initialized = false;
+let reconnectTimer = null;
+let currentState = 'idle';
 
 // --- Debug logging (visible in UI + forwarded to main process console) ---
 function debug(msg, level) {
@@ -58,6 +77,10 @@ function debug(msg, level) {
   line.textContent = '[' + time + '] ' + msg;
   if (debugContent) {
     debugContent.appendChild(line);
+    // Keep log from growing unbounded.
+    while (debugContent.childElementCount > 200) {
+      debugContent.removeChild(debugContent.firstChild);
+    }
     debugContent.scrollTop = debugContent.scrollHeight;
   }
   if (level === 'error') console.error(msg);
@@ -67,7 +90,6 @@ function debug(msg, level) {
 
 // --- UI helpers ---
 function addMessage(role, text) {
-  // Remove welcome message if present
   var welcome = conversation.querySelector('.welcome');
   if (welcome) welcome.remove();
   var el = document.createElement('div');
@@ -78,6 +100,7 @@ function addMessage(role, text) {
 }
 
 function setState(state) {
+  currentState = state;
   statusDot.className = 'dot ' + state;
   statusText.textContent = STATE_LABELS[state] || state;
 }
@@ -98,6 +121,15 @@ function setWsStatus(connected) {
 function setMicStatus(on) {
   micStatus.textContent = on ? 'MIC: on' : 'MIC: off';
   micStatus.className = 'conn-badge ' + (on ? 'on' : 'off');
+}
+
+function showSettingsMessage(text, type) {
+  settingsMessage.textContent = text;
+  settingsMessage.className = 'settings-message ' + (type || 'info');
+  settingsMessage.classList.remove('hidden');
+  setTimeout(function() {
+    settingsMessage.classList.add('hidden');
+  }, 4000);
 }
 
 async function getBackendUrl() {
@@ -184,6 +216,11 @@ async function startMic() {
 
 // --- WebSocket connection ---
 async function connect() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
   var httpUrl = await getBackendUrl();
   var url = wsUrlFromHttp(httpUrl);
   debug('Connecting to WebSocket: ' + url);
@@ -193,6 +230,7 @@ async function connect() {
     ws = new WebSocket(url);
   } catch (err) {
     debug('WebSocket constructor failed: ' + err, 'error');
+    scheduleReconnect();
     return;
   }
 
@@ -216,7 +254,6 @@ async function connect() {
           setLiveTranscript('Loading models…', 'placeholder');
         } else if (msg.state === 'idle') {
           if (listening) {
-            // Backend went idle but we think we're listening — sync state
             listening = false;
             pushBtn.classList.remove('active');
             pushBtn.textContent = 'Push to talk';
@@ -260,14 +297,31 @@ async function connect() {
   ws.onclose = function(event) {
     debug('WebSocket closed (code=' + event.code + ')', 'warn');
     setWsStatus(false);
-    setState('idle');
+    if (currentState !== 'idle') {
+      setState('idle');
+    }
+    if (listening) {
+      listening = false;
+      pushBtn.classList.remove('active');
+      pushBtn.textContent = 'Push to talk';
+    }
     setHint('Disconnected. Reconnecting…');
-    setTimeout(connect, 2000);
+    scheduleReconnect();
   };
 
   ws.onerror = function() {
     debug('WebSocket error', 'error');
   };
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(function() {
+    reconnectTimer = null;
+    if (!wsConnected && initialized) {
+      connect();
+    }
+  }, 2000);
 }
 
 function sendJson(obj) {
@@ -311,17 +365,27 @@ function playAudio(base64Data, sampleRate) {
   if (audioCtx.state === 'suspended') {
     audioCtx.resume().catch(function() {});
   }
-  var binary = atob(base64Data);
-  var bytes = new Uint8Array(binary.length);
-  for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  var float32 = new Float32Array(bytes.buffer);
-  var buffer = audioCtx.createBuffer(1, float32.length, sampleRate);
-  buffer.copyToChannel(float32, 0);
-  var node = audioCtx.createBufferSource();
-  node.buffer = buffer;
-  node.connect(audioCtx.destination);
-  node.start();
-  node.onended = function() { debug('TTS playback finished', 'ok'); };
+  try {
+    var binary = atob(base64Data);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    var float32 = new Float32Array(bytes.buffer);
+
+    if (float32.length === 0) {
+      debug('TTS audio empty, skipping playback', 'warn');
+      return;
+    }
+
+    var buffer = audioCtx.createBuffer(1, float32.length, sampleRate);
+    buffer.copyToChannel(float32, 0);
+    var node = audioCtx.createBufferSource();
+    node.buffer = buffer;
+    node.connect(audioCtx.destination);
+    node.start();
+    node.onended = function() { debug('TTS playback finished', 'ok'); };
+  } catch (err) {
+    debug('Audio playback error: ' + err, 'error');
+  }
 }
 
 // --- Push to talk (THE user gesture that starts everything) ---
@@ -334,7 +398,6 @@ pushBtn.addEventListener('click', async function() {
     pushBtn.disabled = true;
     pushBtn.textContent = 'Starting…';
 
-    // 1. Start mic (MUST be in this user gesture)
     var micOk = await startMic();
     if (!micOk) {
       pushBtn.disabled = false;
@@ -342,10 +405,8 @@ pushBtn.addEventListener('click', async function() {
       return;
     }
 
-    // 2. Connect WebSocket
     await connect();
 
-    // 3. Wait for WebSocket to be ready
     var waited = 0;
     while (!wsConnected && waited < 5000) {
       await new Promise(function(r) { setTimeout(r, 100); });
@@ -400,6 +461,9 @@ stopBtn.addEventListener('click', function() {
 
 settingsBtn.addEventListener('click', function() {
   settingsPanel.classList.toggle('hidden');
+  if (!settingsPanel.classList.contains('hidden')) {
+    loadSettingsFromBackend();
+  }
 });
 closeSettings.addEventListener('click', function() {
   settingsPanel.classList.add('hidden');
@@ -409,26 +473,104 @@ clearLogBtn.addEventListener('click', function() {
   if (debugContent) debugContent.innerHTML = '';
 });
 
-saveSettings.addEventListener('click', async function() {
-  var patch = {
+// --- Settings management ---
+function populateSettingsUI(cfg) {
+  wakeWordInput.value = cfg.wake_word || '';
+  sensitivityInput.value = cfg.wake_word_sensitivity || 0.06;
+  sttModelInput.value = cfg.stt_model || '';
+  sttLanguageInput.value = cfg.stt_language || 'en';
+  ttsModelInput.value = cfg.tts_model || '';
+  ttsSpeakerInput.value = cfg.tts_speaker_embeddings || '';
+  llmModelInput.value = cfg.llm_model || '';
+  llmMaxTokensInput.value = cfg.llm_max_new_tokens || 256;
+  llmTemperatureInput.value = cfg.llm_temperature || 0.7;
+  silenceThresholdInput.value = cfg.silence_threshold || 0.02;
+  silenceDurationInput.value = cfg.silence_duration_ms || 1200;
+  minRecordingInput.value = cfg.min_recording_ms || 1000;
+  maxRecordingInput.value = cfg.max_recording_ms || 15000;
+  deviceInput.value = cfg.device || 'auto';
+  enableCommands.checked = cfg.enable_command_execution !== false;
+  enableLLM.checked = cfg.enable_llm_response !== false;
+}
+
+function gatherSettingsFromUI() {
+  return {
     wake_word: wakeWordInput.value.trim() || 'computer',
     wake_word_sensitivity: parseFloat(sensitivityInput.value) || 0.06,
+    stt_model: sttModelInput.value.trim(),
+    stt_language: sttLanguageInput.value.trim() || 'en',
+    tts_model: ttsModelInput.value.trim(),
+    tts_speaker_embeddings: ttsSpeakerInput.value.trim(),
+    llm_model: llmModelInput.value.trim(),
+    llm_max_new_tokens: parseInt(llmMaxTokensInput.value, 10) || 256,
+    llm_temperature: parseFloat(llmTemperatureInput.value) || 0.7,
+    silence_threshold: parseFloat(silenceThresholdInput.value) || 0.02,
+    silence_duration_ms: parseInt(silenceDurationInput.value, 10) || 1200,
+    min_recording_ms: parseInt(minRecordingInput.value, 10) || 1000,
+    max_recording_ms: parseInt(maxRecordingInput.value, 10) || 15000,
+    device: deviceInput.value || 'auto',
     enable_command_execution: enableCommands.checked,
     enable_llm_response: enableLLM.checked,
   };
+}
+
+async function loadSettingsFromBackend() {
   var httpUrl = await getBackendUrl();
   try {
-    await fetch(httpUrl + '/config', {
+    var res = await fetch(httpUrl + '/config');
+    if (res.ok) {
+      var cfg = await res.json();
+      populateSettingsUI(cfg);
+      debug('Settings loaded from backend', 'ok');
+    }
+  } catch (err) {
+    debug('Could not load settings: ' + err, 'warn');
+  }
+}
+
+saveSettings.addEventListener('click', async function() {
+  var patch = gatherSettingsFromUI();
+  var httpUrl = await getBackendUrl();
+  try {
+    var res = await fetch(httpUrl + '/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     });
-    addMessage('system', 'Settings saved.');
+    var data = await res.json();
+    if (!res.ok) {
+      var errMsg = (data.errors || []).join('; ') || 'Validation failed';
+      showSettingsMessage(errMsg, 'error');
+      debug('Settings validation failed: ' + errMsg, 'error');
+      return;
+    }
+    if (data._restart_required) {
+      var keys = (data._restart_keys || []).join(', ');
+      showSettingsMessage('Saved. Restart required for: ' + keys, 'warn');
+      addMessage('system', 'Settings saved. Restart the app for model/device changes to take effect (' + keys + ').');
+    } else {
+      showSettingsMessage('Settings saved successfully.', 'success');
+      addMessage('system', 'Settings saved.');
+    }
     debug('Settings saved', 'ok');
-    settingsPanel.classList.add('hidden');
   } catch (err) {
-    addMessage('error', 'Failed to save settings: ' + err.message);
+    showSettingsMessage('Failed to save: ' + err.message, 'error');
     debug('Settings save failed: ' + err, 'error');
+  }
+});
+
+resetSettings.addEventListener('click', async function() {
+  var httpUrl = await getBackendUrl();
+  try {
+    var res = await fetch(httpUrl + '/config');
+    if (res.ok) {
+      // Populate with current defaults from backend.
+      var cfg = await res.json();
+      populateSettingsUI(cfg);
+      showSettingsMessage('Fields reset to current saved values.', 'info');
+    }
+  } catch (err) {
+    debug('Reset failed: ' + err, 'warn');
   }
 });
 
@@ -439,12 +581,11 @@ saveSettings.addEventListener('click', async function() {
   debug('Backend URL: ' + httpUrl);
   try {
     var res = await fetch(httpUrl + '/config');
-    var cfg = await res.json();
-    wakeWordInput.value = cfg.wake_word || '';
-    sensitivityInput.value = cfg.wake_word_sensitivity || 0.06;
-    enableCommands.checked = !!cfg.enable_command_execution;
-    enableLLM.checked = !!cfg.enable_llm_response;
-    debug('Settings loaded from backend', 'ok');
+    if (res.ok) {
+      var cfg = await res.json();
+      populateSettingsUI(cfg);
+      debug('Settings loaded from backend', 'ok');
+    }
   } catch (err) {
     debug('Could not load settings: ' + err, 'warn');
   }
@@ -455,7 +596,6 @@ saveSettings.addEventListener('click', async function() {
   } else {
     debug('getUserMedia available', 'ok');
   }
-  // Do NOT connect WebSocket here — wait for Push to Talk click (user gesture).
   setState('idle');
   setHint('Click "Push to talk" to begin.');
 })();

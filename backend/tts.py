@@ -38,25 +38,38 @@ class TTSEngine:
         """Try multiple sources for speaker embeddings; never fall back to zeros."""
         import torch
 
-        # Source 1: try the datasets library (original approach)
+        # Source 1: try the datasets library with the correct xvector dataset.
+        try:
+            from datasets import load_dataset  # type: ignore
+
+            ds = load_dataset(name, split="validation")
+            emb = torch.tensor(ds[7306]["xvector"]).unsqueeze(0).to(device)
+            logger.info("Speaker embeddings loaded from dataset %s", name)
+            return emb
+        except Exception as exc:
+            logger.info("Dataset %s unavailable (%s), trying alternatives…", name, exc)
+
+        # Source 1b: try with train split (some datasets only have train).
         try:
             from datasets import load_dataset  # type: ignore
 
             ds = load_dataset(name, split="train")
             emb = torch.tensor(ds[0]["xvector"]).unsqueeze(0).to(device)
-            logger.info("Speaker embeddings loaded from dataset %s", name)
+            logger.info("Speaker embeddings loaded from dataset %s (train split)", name)
             return emb
         except Exception as exc:
-            logger.info("Dataset %s unavailable (%s), trying alternatives…", name, exc)
+            logger.info("Dataset %s train split also unavailable: %s", name, exc)
 
         # Source 2: download a pre-computed speaker embedding .pt file
         try:
             from huggingface_hub import hf_hub_download
 
             path = hf_hub_download(repo_id="microsoft/speecht5_tts", filename="speaker_embeddings.pt")
-            emb = torch.load(path, map_location=device).unsqueeze(0).to(device)
+            emb = torch.load(path, map_location=device, weights_only=True)
+            if emb.dim() == 1:
+                emb = emb.unsqueeze(0)
             logger.info("Speaker embeddings loaded from speecht5_tts repo")
-            return emb
+            return emb.to(device)
         except Exception as exc:
             logger.info("hf_hub_download for speaker_embeddings.pt failed: %s", exc)
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws://127.0.0.1:8765 http://127.0.0.1:8765;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:* ws://localhost:* http://localhost:*;" />
   <title>Voice Assistant</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -38,26 +38,108 @@
   </section>
 
   <section id="settingsPanel" class="settings hidden">
-    <h2>Settings</h2>
-    <label>
-      Wake word
-      <input id="wakeWordInput" type="text" placeholder="computer" />
-    </label>
-    <label>
-      Wake sensitivity (0.01–0.5, lower = stricter)
-      <input id="sensitivityInput" type="number" min="0.01" max="0.5" step="0.01" />
-    </label>
-    <label class="row">
-      <input id="enableCommands" type="checkbox" />
-      Enable command execution
-    </label>
-    <label class="row">
-      <input id="enableLLM" type="checkbox" />
-      Enable LLM responses
-    </label>
-    <div class="row">
+    <div class="settings-header">
+      <h2>Settings</h2>
+      <button id="closeSettings" class="icon-btn" title="Close">✕</button>
+    </div>
+    <div class="settings-scroll">
+      <fieldset>
+        <legend>Wake Word</legend>
+        <label>
+          Wake word
+          <input id="wakeWordInput" type="text" placeholder="computer" />
+        </label>
+        <label>
+          Sensitivity (0.01–0.5, lower = stricter)
+          <input id="sensitivityInput" type="number" min="0.01" max="0.5" step="0.01" />
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Speech Recognition</legend>
+        <label>
+          STT model
+          <input id="sttModelInput" type="text" placeholder="distil-whisper/distil-large-v3" />
+        </label>
+        <label>
+          Language
+          <input id="sttLanguageInput" type="text" placeholder="en" />
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Text-to-Speech</legend>
+        <label>
+          TTS model
+          <input id="ttsModelInput" type="text" placeholder="microsoft/speecht5_tts" />
+        </label>
+        <label>
+          Speaker embeddings
+          <input id="ttsSpeakerInput" type="text" placeholder="Matthijs/cmu-arctic-xvectors" />
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>LLM</legend>
+        <label>
+          Model
+          <input id="llmModelInput" type="text" placeholder="Qwen/Qwen2.5-1.5B-Instruct" />
+        </label>
+        <label>
+          Max tokens (16–2048)
+          <input id="llmMaxTokensInput" type="number" min="16" max="2048" step="1" />
+        </label>
+        <label>
+          Temperature (0.0–2.0)
+          <input id="llmTemperatureInput" type="number" min="0" max="2" step="0.1" />
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Recording</legend>
+        <label>
+          Silence threshold (0.001–0.5)
+          <input id="silenceThresholdInput" type="number" min="0.001" max="0.5" step="0.001" />
+        </label>
+        <label>
+          Silence duration (ms)
+          <input id="silenceDurationInput" type="number" min="200" max="5000" step="100" />
+        </label>
+        <label>
+          Min recording (ms)
+          <input id="minRecordingInput" type="number" min="200" max="10000" step="100" />
+        </label>
+        <label>
+          Max recording (ms)
+          <input id="maxRecordingInput" type="number" min="2000" max="60000" step="1000" />
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>System</legend>
+        <label>
+          Device
+          <select id="deviceInput">
+            <option value="auto">Auto (GPU if available)</option>
+            <option value="cuda">CUDA (GPU)</option>
+            <option value="cpu">CPU</option>
+          </select>
+        </label>
+        <label class="row">
+          <input id="enableCommands" type="checkbox" />
+          Enable command execution
+        </label>
+        <label class="row">
+          <input id="enableLLM" type="checkbox" />
+          Enable LLM responses
+        </label>
+      </fieldset>
+    </div>
+
+    <div id="settingsMessage" class="settings-message hidden"></div>
+    <div class="settings-actions">
       <button id="saveSettings" class="primary">Save</button>
-      <button id="closeSettings" class="ghost">Close</button>
+      <button id="resetSettings" class="ghost">Reset defaults</button>
     </div>
   </section>
 
