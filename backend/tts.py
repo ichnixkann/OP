@@ -1,4 +1,9 @@
-"""Text-to-Speech using Microsoft SpeechT5 via HuggingFace transformers."""
+"""Text-to-Speech engine supporting multiple model architectures.
+
+Supported model types:
+- VITS/MMS models (e.g. facebook/mms-tts-eng) — natural, fast, no speaker embeddings needed
+- SpeechT5 (microsoft/speecht5_tts) — configurable speaker via embeddings dataset
+"""
 from __future__ import annotations
 
 import logging
@@ -9,38 +14,63 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-class TTSEngine:
-    """Wraps SpeechT5 for synthesising speech from text."""
+def _is_vits_model(model_name: str) -> bool:
+    """Detect VITS/MMS model by name pattern."""
+    lower = model_name.lower()
+    return "mms-tts" in lower or "vits" in lower
 
-    def __init__(
-        self,
-        model_name: str,
-        speaker_embeddings_name: str,
-        device: str,
-    ):
+
+class VITSEngine:
+    """VITS/MMS TTS — produces natural speech without speaker embeddings."""
+
+    def __init__(self, model_name: str, device: str):
+        import torch
+        from transformers import VitsModel, AutoTokenizer
+
+        logger.info("Loading VITS TTS model %s on %s", model_name, device)
+        self.device = device
+        self._tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self._model = VitsModel.from_pretrained(model_name).to(device)
+        self._sample_rate = self._model.config.sampling_rate
+        logger.info("VITS TTS model loaded (sample_rate=%d)", self._sample_rate)
+
+    def synthesize(self, text: str, sample_rate: int = 22050) -> tuple[np.ndarray, int]:
+        """Synthesize text to PCM audio. Returns (float32 mono, output_sample_rate)."""
+        import torch
+
+        text = (text or "").strip()
+        if not text:
+            return np.zeros(0, dtype=np.float32), self._sample_rate
+
+        inputs = self._tokenizer(text, return_tensors="pt").to(self.device)
+        with torch.no_grad():
+            output = self._model(**inputs)
+        audio = output.waveform[0].cpu().numpy().astype(np.float32)
+        logger.info("Synthesized %d samples (%.2fs)", audio.size, audio.size / self._sample_rate)
+        return audio, self._sample_rate
+
+
+class SpeechT5Engine:
+    """SpeechT5 TTS with configurable speaker embeddings."""
+
+    def __init__(self, model_name: str, speaker_embeddings_name: str, device: str):
+        import torch
         from transformers import SpeechT5Processor, SpeechT5ForTextToSpeech, SpeechT5HifiGan
-        from transformers import AutoProcessor
 
-        logger.info("Loading TTS model %s on %s", model_name, device)
+        logger.info("Loading SpeechT5 TTS model %s on %s", model_name, device)
         self.device = device
         self._processor = SpeechT5Processor.from_pretrained(model_name)
         self._model = SpeechT5ForTextToSpeech.from_pretrained(model_name).to(device)
         self._vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan").to(device)
-
-        # Load speaker embeddings. The Matthijs/cmu_xim2 dataset requires the
-        # `datasets` library and has been unreliable on the Hub. Instead we
-        # download the speaker embedding vector directly as a .pt file from
-        # the SpeechT5 model card examples, or generate a deterministic one.
         self._speaker_embeddings = self._load_speaker_embeddings(speaker_embeddings_name, device)
-        logger.info("TTS model loaded")
+        logger.info("SpeechT5 TTS model loaded")
 
     def _load_speaker_embeddings(self, name: str, device: str):
-        """Try multiple sources for speaker embeddings; never fall back to zeros."""
+        """Try multiple sources for speaker embeddings."""
         import torch
 
-        # Source 1: try the datasets library with the correct xvector dataset.
         try:
-            from datasets import load_dataset  # type: ignore
+            from datasets import load_dataset
 
             ds = load_dataset(name, split="validation")
             emb = torch.tensor(ds[7306]["xvector"]).unsqueeze(0).to(device)
@@ -49,9 +79,8 @@ class TTSEngine:
         except Exception as exc:
             logger.info("Dataset %s unavailable (%s), trying alternatives…", name, exc)
 
-        # Source 1b: try with train split (some datasets only have train).
         try:
-            from datasets import load_dataset  # type: ignore
+            from datasets import load_dataset
 
             ds = load_dataset(name, split="train")
             emb = torch.tensor(ds[0]["xvector"]).unsqueeze(0).to(device)
@@ -60,7 +89,6 @@ class TTSEngine:
         except Exception as exc:
             logger.info("Dataset %s train split also unavailable: %s", name, exc)
 
-        # Source 2: download a pre-computed speaker embedding .pt file
         try:
             from huggingface_hub import hf_hub_download
 
@@ -73,16 +101,16 @@ class TTSEngine:
         except Exception as exc:
             logger.info("hf_hub_download for speaker_embeddings.pt failed: %s", exc)
 
-        # Source 3: generate a deterministic embedding (not zeros — zeros produce
-        # garbage audio). Use a fixed seed so the voice is consistent across runs.
         torch.manual_seed(42)
         emb = torch.randn(1, 512) * 0.1
-        emb = emb / emb.norm() * 10.0  # normalise to typical xvector magnitude
+        emb = emb / emb.norm() * 10.0
         logger.warning("Using deterministic random speaker embeddings (voice may vary)")
         return emb.to(device)
 
     def synthesize(self, text: str, sample_rate: int = 22050) -> tuple[np.ndarray, int]:
         """Synthesize text to PCM audio. Returns (float32 mono, output_sample_rate)."""
+        import torch
+
         text = (text or "").strip()
         if not text:
             return np.zeros(0, dtype=np.float32), sample_rate
@@ -94,25 +122,30 @@ class TTSEngine:
                 vocoder=self._vocoder,
             )
         audio = waveform.cpu().numpy().astype(np.float32)
-        out_sr = 22050  # SpeechT5 native rate
+        out_sr = 22050
         logger.info("Synthesized %d samples (%.2fs)", audio.size, audio.size / out_sr)
         return audio, out_sr
 
 
-import torch  # noqa: E402  (kept at bottom to keep top-level imports tidy)
+import torch  # noqa: E402
 
-_engine: Optional[TTSEngine] = None
+_engine: Optional[VITSEngine | SpeechT5Engine] = None
 
 
-def get_engine(config: dict) -> TTSEngine:
+def get_engine(config: dict) -> VITSEngine | SpeechT5Engine:
     global _engine
     if _engine is None:
         from .config import resolve_device
 
         device = resolve_device(config)
-        _engine = TTSEngine(
-            model_name=config["tts_model"],
-            speaker_embeddings_name=config["tts_speaker_embeddings"],
-            device=device,
-        )
+        model_name = config["tts_model"]
+
+        if _is_vits_model(model_name):
+            _engine = VITSEngine(model_name=model_name, device=device)
+        else:
+            _engine = SpeechT5Engine(
+                model_name=model_name,
+                speaker_embeddings_name=config["tts_speaker_embeddings"],
+                device=device,
+            )
     return _engine
